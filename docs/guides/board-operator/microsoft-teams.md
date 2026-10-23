@@ -184,6 +184,29 @@ Use the same Application (client) ID in all three places.
   group chats, and channels are allowed, and whether an @mention is required.
 - Useful commands in Teams: `/status`, `/new`, `/close`.
 
+## 7. Get notified about everything else (optional)
+
+The chat connector only posts updates for conversations started in Teams. To
+hear about agent questions, approval requests, finished or blocked work, and
+budget alerts from any task, install the Teams Notifier plugin from
+`packages/plugins/plugin-teams-notifier`:
+
+1. In Teams, open the chat or channel for notifications, open **Workflows**,
+   create a workflow from **Send webhook alerts to a chat** (or **to a
+   channel**), and copy its URL.
+2. From your Paperclip checkout:
+
+   ```sh
+   pnpm --filter @paperclipai/plugin-teams-notifier build
+   pnpm paperclipai plugin install "$PWD/packages/plugins/plugin-teams-notifier"
+   ```
+
+3. In the plugin's settings, paste the workflow URL and choose events. Under
+   **Agent Teams bots**, map each Teams-connected agent to its bot's
+   Application (client) ID so cards get a **Reply in Teams** button.
+
+See the plugin's README for details and limits.
+
 ## Limits in this release
 
 - Private and shared channels are not supported.

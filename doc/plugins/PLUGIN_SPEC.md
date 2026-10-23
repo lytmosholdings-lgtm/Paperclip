@@ -913,6 +913,7 @@ Minimum event set:
 - `issue.document.updated`
 - `issue.document.deleted`
 - `issue.relations.updated`
+- `issue.interaction.created`
 - `issue.checked_out`
 - `issue.released`
 - `issue.assignment_wakeup_requested`
