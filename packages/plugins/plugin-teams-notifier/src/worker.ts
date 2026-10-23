@@ -1,6 +1,6 @@
 import { definePlugin, runWorker, type PluginContext, type PluginEvent } from "@paperclipai/plugin-sdk";
 import { buildTeamsMessage, teamsBotChatUrl, type Notification, type NotificationKind } from "./cards.js";
-import { botAppIdForAgent, parseConfig, type TeamsNotifierConfig } from "./config.js";
+import { agentMatches, botAppIdForAgent, parseConfig, type TeamsNotifierConfig } from "./config.js";
 
 const STATUS_KINDS: Record<string, { kind: NotificationKind; enabled: (config: TeamsNotifierConfig) => boolean }> = {
   done: { kind: "completed", enabled: (config) => config.notifyCompleted },
@@ -15,7 +15,16 @@ const APPROVAL_LABELS: Record<string, string> = {
   request_board_approval: "Board approval requested",
 };
 
+const RESOLVER_LABELS: Record<string, string> = {
+  anyone: "You or any agent",
+  not_creator: "You or another agent",
+  human_only: "Board only",
+  board_or_agents: "You or any agent",
+  board_only: "Board only",
+};
+
 const LAST_STATUS_KEY = "last-notified-status";
+const RELAYED_KEY = "relayed-to-board";
 
 type Payload = Record<string, unknown>;
 
@@ -36,15 +45,30 @@ function humanize(value: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+type AgentRef = { id: string; name: string };
+
 interface Context {
   ctx: PluginContext;
   config: TeamsNotifierConfig;
   companyId: string;
+  officer: AgentRef | null;
 }
 
 async function loadConfig(ctx: PluginContext, companyId: string): Promise<TeamsNotifierConfig | null> {
   const config = parseConfig(await ctx.config.get(companyId));
   return config.workflowUrl ? config : null;
+}
+
+async function resolveOfficer(ctx: PluginContext, config: TeamsNotifierConfig, companyId: string): Promise<AgentRef | null> {
+  if (!config.officerAgent) return null;
+  const agents = await ctx.agents.list({ companyId });
+  const officer = agents.find((agent) => agentMatches(config.officerAgent, agent));
+  return officer ? { id: officer.id, name: officer.name } : null;
+}
+
+/** The officer's own tasks (its Teams conversations and relayed messages) already reach Teams. */
+function isOfficerTask(c: Context, issue: { assigneeAgentId: string | null }): boolean {
+  return c.officer !== null && issue.assigneeAgentId === c.officer.id;
 }
 
 async function agentFor(c: Context, agentId: string | null | undefined) {
@@ -62,8 +86,9 @@ async function issueUrl(c: Context, issueRef: string): Promise<string> {
   return `${await companyPath(c)}/issues/${encodeURIComponent(issueRef)}`;
 }
 
-function replyUrl(c: Context, agent: { id: string; name: string } | null, reference: string | null): string | null {
-  const botAppId = botAppIdForAgent(c.config, agent);
+function replyUrl(c: Context, agent: AgentRef | null, reference: string | null): string | null {
+  // With an officer, every reply goes through it; otherwise to the agent's own bot.
+  const botAppId = botAppIdForAgent(c.config, c.officer ?? agent);
   if (!botAppId) return null;
   return teamsBotChatUrl(botAppId, reference ? `Re ${reference}: ` : "");
 }
@@ -92,7 +117,7 @@ async function onInteractionCreated(c: Context, event: PluginEvent): Promise<voi
   const payload = asRecord(event.payload);
   const interactionId = asString(payload.interactionId);
   const issue = await c.ctx.issues.get(event.entityId, c.companyId);
-  if (!issue) return;
+  if (!issue || isOfficerTask(c, issue)) return;
   const interactions = await c.ctx.issues.listInteractions(issue.id, c.companyId);
   const interaction = interactions.find((candidate) => candidate.id === interactionId);
   // Agent-to-agent handoffs are not decisions for a person.
@@ -105,6 +130,9 @@ async function onInteractionCreated(c: Context, event: PluginEvent): Promise<voi
     title: interaction?.title ?? issue.title,
     agentName: agent?.name,
     taskLabel: `${reference} · ${issue.title}`,
+    decider: interaction?.addresseeUserId
+      ? "Board only"
+      : RESOLVER_LABELS[interaction?.effectiveResolverPolicy ?? "anyone"] ?? null,
     body: interaction?.summary ?? null,
     openUrl: await issueUrl(c, reference),
     replyUrl: replyUrl(c, agent, reference),
@@ -122,9 +150,10 @@ async function onApprovalCreated(c: Context, event: PluginEvent): Promise<void> 
     kind: "approval",
     title: summary ?? APPROVAL_LABELS[approval.type] ?? humanize(approval.type),
     agentName: agent?.name,
+    decider: "Board only",
     body: summary ? (APPROVAL_LABELS[approval.type] ?? humanize(approval.type)) : null,
     openUrl: `${await companyPath(c)}/approvals/${encodeURIComponent(approval.id)}`,
-    replyUrl: replyUrl(c, agent, null),
+    replyUrl: replyUrl(c, agent, `approval ${approval.id.slice(0, 8)}`),
   });
 }
 
@@ -139,12 +168,12 @@ async function onIssueUpdated(c: Context, event: PluginEvent): Promise<void> {
   const target = STATUS_KINDS[status];
   if (!target || !target.enabled(c.config)) return;
 
+  const issue = await c.ctx.issues.get(event.entityId, c.companyId);
+  if (!issue || isOfficerTask(c, issue)) return;
   const scope = { scopeKind: "issue" as const, scopeId: event.entityId, stateKey: LAST_STATUS_KEY };
   if ((await c.ctx.state.get(scope)) === status) return;
   await c.ctx.state.set(scope, status);
 
-  const issue = await c.ctx.issues.get(event.entityId, c.companyId);
-  if (!issue) return;
   const agent = await agentFor(c, asString(payload.agentId) ?? issue.assigneeAgentId);
   const reference = issue.identifier ?? issue.id;
   await send(c, {
@@ -157,13 +186,37 @@ async function onIssueUpdated(c: Context, event: PluginEvent): Promise<void> {
   });
 }
 
+/** Relays a task another agent assigned to the officer, once, as a message for the board. */
+async function onOfficerInbox(c: Context, event: PluginEvent): Promise<void> {
+  if (!c.officer || !c.config.notifyOfficerInbox || !event.entityId) return;
+  const issue = await c.ctx.issues.get(event.entityId, c.companyId);
+  if (!issue || !isOfficerTask(c, issue)) return;
+  // Only agent-raised items: the officer's Teams conversations come from people.
+  if (!issue.createdByAgentId || issue.createdByAgentId === c.officer.id) return;
+  const scope = { scopeKind: "issue" as const, scopeId: issue.id, stateKey: RELAYED_KEY };
+  if (await c.ctx.state.get(scope)) return;
+  await c.ctx.state.set(scope, true);
+
+  const sender = await agentFor(c, issue.createdByAgentId);
+  const reference = issue.identifier ?? issue.id;
+  await send(c, {
+    kind: "message",
+    title: issue.title,
+    agentName: sender?.name,
+    taskLabel: reference,
+    body: issue.description,
+    openUrl: await issueUrl(c, reference),
+    replyUrl: replyUrl(c, sender, reference),
+  });
+}
+
 async function onCommentCreated(c: Context, event: PluginEvent): Promise<void> {
   if (!c.config.notifyAgentComments || event.actorType !== "agent") return;
   const payload = asRecord(event.payload);
   const issueId = event.entityType === "issue" ? event.entityId : asString(payload.issueId);
   if (!issueId) return;
   const issue = await c.ctx.issues.get(issueId, c.companyId);
-  if (!issue) return;
+  if (!issue || isOfficerTask(c, issue)) return;
   const agent = await agentFor(c, asString(payload.agentId) ?? event.actorId);
   const reference = issue.identifier ?? issue.id;
   await send(c, {
@@ -198,6 +251,7 @@ async function onRunFailed(c: Context, event: PluginEvent): Promise<void> {
   const agent = await agentFor(c, asString(payload.agentId));
   const issueId = asString(payload.issueId);
   const issue = issueId ? await c.ctx.issues.get(issueId, c.companyId) : null;
+  if (issue && isOfficerTask(c, issue)) return;
   const reference = issue ? (issue.identifier ?? issue.id) : null;
   await send(c, {
     kind: "run_failed",
@@ -210,6 +264,8 @@ async function onRunFailed(c: Context, event: PluginEvent): Promise<void> {
 }
 
 const HANDLERS: Array<[Parameters<PluginContext["events"]["on"]>[0], (c: Context, event: PluginEvent) => Promise<void>]> = [
+  ["issue.created", onOfficerInbox],
+  ["issue.updated", onOfficerInbox],
   ["issue.interaction.created", onInteractionCreated],
   ["approval.created", onApprovalCreated],
   ["issue.updated", onIssueUpdated],
@@ -224,7 +280,8 @@ const plugin = definePlugin({
       ctx.events.on(eventType, async (event) => {
         const config = await loadConfig(ctx, event.companyId);
         if (!config) return;
-        await handler({ ctx, config, companyId: event.companyId }, event);
+        const officer = await resolveOfficer(ctx, config, event.companyId);
+        await handler({ ctx, config, companyId: event.companyId, officer }, event);
       });
     }
     ctx.logger.info("Teams notifier ready");

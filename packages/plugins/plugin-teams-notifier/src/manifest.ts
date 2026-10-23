@@ -40,6 +40,13 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "Base URL for \"Open in Paperclip\" links, e.g. http://localhost:3100.",
         default: DEFAULT_CONFIG.boardUrl,
       },
+      officerAgent: {
+        type: "string",
+        title: "Communications officer agent",
+        description:
+          "Optional. Name or ID of the agent that handles your Teams replies. Tasks other agents assign to it are relayed to Teams as messages, every Reply button opens a chat with it, and its own tasks are not notified separately.",
+        default: DEFAULT_CONFIG.officerAgent,
+      },
       agentBots: {
         type: "array",
         title: "Agent Teams bots",
@@ -54,6 +61,11 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           required: ["agent", "botAppId"],
         },
+      },
+      notifyOfficerInbox: {
+        type: "boolean",
+        title: "Messages sent to the communications officer",
+        default: DEFAULT_CONFIG.notifyOfficerInbox,
       },
       notifyQuestions: {
         type: "boolean",

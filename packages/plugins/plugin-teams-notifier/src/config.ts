@@ -6,7 +6,9 @@ export interface AgentBotMapping {
 export interface TeamsNotifierConfig {
   workflowUrl: string;
   boardUrl: string;
+  officerAgent: string;
   agentBots: AgentBotMapping[];
+  notifyOfficerInbox: boolean;
   notifyQuestions: boolean;
   notifyApprovals: boolean;
   notifyCompleted: boolean;
@@ -20,7 +22,9 @@ export interface TeamsNotifierConfig {
 export const DEFAULT_CONFIG: TeamsNotifierConfig = {
   workflowUrl: "",
   boardUrl: "http://localhost:3100",
+  officerAgent: "",
   agentBots: [],
+  notifyOfficerInbox: true,
   notifyQuestions: true,
   notifyApprovals: true,
   notifyCompleted: true,
@@ -54,7 +58,9 @@ export function parseConfig(raw: Record<string, unknown>): TeamsNotifierConfig {
   return {
     workflowUrl: readString(raw.workflowUrl, DEFAULT_CONFIG.workflowUrl),
     boardUrl: readString(raw.boardUrl, DEFAULT_CONFIG.boardUrl).replace(/\/+$/, ""),
+    officerAgent: readString(raw.officerAgent, DEFAULT_CONFIG.officerAgent),
     agentBots: readAgentBots(raw.agentBots),
+    notifyOfficerInbox: readBoolean(raw.notifyOfficerInbox, DEFAULT_CONFIG.notifyOfficerInbox),
     notifyQuestions: readBoolean(raw.notifyQuestions, DEFAULT_CONFIG.notifyQuestions),
     notifyApprovals: readBoolean(raw.notifyApprovals, DEFAULT_CONFIG.notifyApprovals),
     notifyCompleted: readBoolean(raw.notifyCompleted, DEFAULT_CONFIG.notifyCompleted),
@@ -66,15 +72,16 @@ export function parseConfig(raw: Record<string, unknown>): TeamsNotifierConfig {
   };
 }
 
+/** Whether a configured agent reference (ID or case-insensitive name) names this agent. */
+export function agentMatches(reference: string, agent: { id: string; name: string }): boolean {
+  return reference === agent.id || reference.toLowerCase() === agent.name.toLowerCase();
+}
+
 /** Bot app ID for an agent, matched by ID or case-insensitive name. */
 export function botAppIdForAgent(
   config: TeamsNotifierConfig,
   agent: { id: string; name: string } | null,
 ): string | null {
   if (!agent) return null;
-  const name = agent.name.toLowerCase();
-  const match = config.agentBots.find(
-    (entry) => entry.agent === agent.id || entry.agent.toLowerCase() === name,
-  );
-  return match?.botAppId ?? null;
+  return config.agentBots.find((entry) => agentMatches(entry.agent, agent))?.botAppId ?? null;
 }

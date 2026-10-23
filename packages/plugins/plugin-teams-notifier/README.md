@@ -6,6 +6,7 @@ for this plugin.
 
 | Event | Card | Default |
 |-------|------|---------|
+| Another agent assigns a task to the communications officer | Message for you | on |
 | An agent asks a person a question or needs a decision | Your input is needed | on |
 | An approval is requested | Approval requested | on |
 | A task moves to `done` | Work completed | on |
@@ -22,7 +23,22 @@ pre-filled with `Re <task>: `. Your reply reaches the agent through the chat
 connector; it lands in your direct-message conversation with that agent rather
 than on the original task, so keep the task reference in the message.
 
-Approvals and question forms are still resolved on the Paperclip board.
+Question and approval cards show **Who decides**: "Board only", or whether an
+agent may answer. Approvals and board-only questions are resolved on the
+Paperclip board.
+
+### Communications officer mode
+
+Set **Communications officer agent** to route everything through one agent:
+
+- Tasks other agents assign to the officer are posted once as "Message for
+  you", with the task description.
+- Every **Reply in Teams** button opens a chat with the officer's bot.
+- The officer's own tasks (its Teams conversations and relayed messages) are
+  not notified again.
+
+Instruction templates live in `templates/`. See
+`docs/guides/board-operator/communications-officer.md` for the full setup.
 
 ## Setup
 

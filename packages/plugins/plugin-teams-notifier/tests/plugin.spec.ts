@@ -18,10 +18,14 @@ const issueId = "00000000-0000-4000-8000-000000000003";
 const approvalId = "00000000-0000-4000-8000-000000000004";
 const interactionId = "00000000-0000-4000-8000-000000000005";
 const botAppId = "11111111-2222-4333-8444-555555555555";
+const officerId = "00000000-0000-4000-8000-000000000006";
+const officerBotAppId = "66666666-7777-4888-8999-000000000000";
+const inboxIssueId = "00000000-0000-4000-8000-000000000007";
 const workflowUrl = "https://example.invalid/workflows/abc?sig=secret";
 
 const company = { id: companyId, name: "Vitavera", issuePrefix: "VIT" } as unknown as Company;
 const agent = { id: agentId, companyId, name: "CEO" } as unknown as Agent;
+const officer = { id: officerId, companyId, name: "Comms Officer" } as unknown as Agent;
 const issue = {
   id: issueId,
   companyId,
@@ -43,7 +47,7 @@ async function setup(config: Record<string, unknown> = {}) {
     manifest,
     config: { workflowUrl, agentBots: [{ agent: "ceo", botAppId }], ...config },
   });
-  harness.seed({ companies: [company], agents: [agent], issues: [issue] });
+  harness.seed({ companies: [company], agents: [agent, officer], issues: [issue] });
   await plugin.definition.setup(harness.ctx);
   return harness;
 }
@@ -171,6 +175,7 @@ describe("events", () => {
           title: "Which supplier should we shortlist?",
           summary: "Two quotes came back within budget.",
           createdByAgentId: agentId,
+          effectiveResolverPolicy: "not_creator",
         } as unknown as IssueThreadInteraction,
       ],
     });
@@ -184,6 +189,7 @@ describe("events", () => {
       "Which supplier should we shortlist?",
       "Agent: CEO",
       "Task: VIT-42 · Draft Q4 supplier plan",
+      "Who decides: You or another agent",
       "Two quotes came back within budget.",
     ]);
   });
@@ -222,7 +228,13 @@ describe("events", () => {
       ],
     });
     await harness.emit("approval.created", {}, { companyId, entityId: approvalId, entityType: "approval" });
-    expect(texts(posted[0])).toEqual(["Approval requested", "Marketing Lead", "Agent: CEO", "Hire a new agent"]);
+    expect(texts(posted[0])).toEqual([
+      "Approval requested",
+      "Marketing Lead",
+      "Agent: CEO",
+      "Who decides: Board only",
+      "Hire a new agent",
+    ]);
     expect(actionUrls(posted[0])["Open in Paperclip"]).toBe(`http://localhost:3100/VIT/approvals/${approvalId}`);
   });
 
@@ -271,5 +283,64 @@ describe("events", () => {
       }),
     ).resolves.toBeUndefined();
     expect(harness.logs.some((entry) => entry.level === "warn" && !JSON.stringify(entry).includes("sig=secret"))).toBe(true);
+  });
+
+  describe("with a communications officer", () => {
+    const officerConfig = {
+      officerAgent: "comms officer",
+      agentBots: [
+        { agent: "ceo", botAppId },
+        { agent: officerId, botAppId: officerBotAppId },
+      ],
+    };
+    const inboxIssue = {
+      id: inboxIssueId,
+      companyId,
+      identifier: "VIT-58",
+      title: "Supplier contract signed",
+      description: "Signed with Acme at the agreed rate. No action needed.",
+      status: "todo",
+      assigneeAgentId: officerId,
+      createdByAgentId: agentId,
+      createdByUserId: null,
+    } as unknown as Issue;
+
+    it("relays agent-raised officer tasks once, replying through the officer", async () => {
+      const harness = await setup(officerConfig);
+      harness.seed({ issues: [inboxIssue] });
+      const base = { companyId, entityId: inboxIssueId, entityType: "issue" };
+      await harness.emit("issue.created", {}, base);
+      await harness.emit("issue.updated", { status: "in_progress", _previous: { status: "todo" } }, base);
+      await harness.emit("issue.updated", { status: "done", _previous: { status: "in_progress" } }, base);
+
+      expect(posted).toHaveLength(1);
+      expect(texts(posted[0])).toEqual([
+        "Message for you",
+        "Supplier contract signed",
+        "Agent: CEO",
+        "Task: VIT-58",
+        "Signed with Acme at the agreed rate. No action needed.",
+      ]);
+      expect(actionUrls(posted[0])["Reply in Teams"]).toBe(teamsBotChatUrl(officerBotAppId, "Re VIT-58: "));
+    });
+
+    it("ignores officer tasks started by people, such as its Teams conversations", async () => {
+      const harness = await setup(officerConfig);
+      harness.seed({
+        issues: [{ ...inboxIssue, createdByAgentId: null, createdByUserId: "user-1" } as unknown as Issue],
+      });
+      await harness.emit("issue.created", {}, { companyId, entityId: inboxIssueId, entityType: "issue" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("routes every reply button to the officer", async () => {
+      const harness = await setup(officerConfig);
+      await harness.emit("issue.updated", { status: "done", _previous: { status: "in_progress" } }, {
+        companyId,
+        entityId: issueId,
+        entityType: "issue",
+      });
+      expect(actionUrls(posted[0])["Reply in Teams"]).toBe(teamsBotChatUrl(officerBotAppId, "Re VIT-42: "));
+    });
   });
 });

@@ -5,6 +5,7 @@
  */
 
 export type NotificationKind =
+  | "message"
   | "question"
   | "approval"
   | "completed"
@@ -19,6 +20,7 @@ export interface Notification {
   title: string;
   agentName?: string | null;
   taskLabel?: string | null;
+  decider?: string | null;
   body?: string | null;
   openUrl?: string | null;
   replyUrl?: string | null;
@@ -27,6 +29,7 @@ export interface Notification {
 const MAX_BODY_CHARS = 600;
 
 const HEADINGS: Record<NotificationKind, string> = {
+  message: "Message for you",
   question: "Your input is needed",
   approval: "Approval requested",
   completed: "Work completed",
@@ -37,7 +40,7 @@ const HEADINGS: Record<NotificationKind, string> = {
   comment: "Agent update",
 };
 
-const URGENT: ReadonlySet<NotificationKind> = new Set(["question", "approval", "blocked", "budget", "run_failed"]);
+const URGENT: ReadonlySet<NotificationKind> = new Set(["message", "question", "approval", "blocked", "budget", "run_failed"]);
 
 export function truncate(text: string, max = MAX_BODY_CHARS): string {
   const trimmed = text.trim();
@@ -53,6 +56,7 @@ export function buildTeamsMessage(notification: Notification) {
   const facts = [
     notification.agentName ? { title: "Agent", value: notification.agentName } : null,
     notification.taskLabel ? { title: "Task", value: notification.taskLabel } : null,
+    notification.decider ? { title: "Who decides", value: notification.decider } : null,
   ].filter((fact): fact is { title: string; value: string } => fact !== null);
 
   const body: Array<Record<string, unknown>> = [
