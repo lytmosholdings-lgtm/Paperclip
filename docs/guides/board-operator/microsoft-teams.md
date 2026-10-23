@@ -25,7 +25,8 @@ on it, and keep approvals and spend decisions on the Paperclip board.
 - A stable public HTTPS hostname for Paperclip. The bundled compose file uses
   a Cloudflare named tunnel, so you need a domain on Cloudflare. Quick
   `trycloudflare.com` tunnels change hostname on restart and break the bot.
-- Docker with Compose, and at least one model provider key.
+- Docker with Compose (or an existing install; see the home PC alternative
+  below), and at least one model provider key.
 
 ## 1. Run Paperclip with a public HTTPS URL
 
@@ -52,6 +53,78 @@ Using your own reverse proxy instead of Cloudflare is fine: drop the `tunnel`
 service, terminate TLS in the proxy, and point it at port 3100. To keep the
 board private and expose only provider webhooks, see
 [Webhook-only chat ingress](/deploy/environment-variables#webhook-only-chat-ingress).
+
+### Alternative: existing install on a home PC (Ubuntu, no Docker)
+
+If Paperclip already runs on your own machine (for example via
+`npx paperclipai run` on `http://localhost:3100`), keep the board private and
+publish only the chat webhook path through a Cloudflare tunnel. Microsoft can
+then reach the bot, but nobody on the internet can reach the board.
+
+<Warning>
+A default local install runs in `local_trusted` mode, where any request that
+reaches Paperclip is treated as the board owner. The tunnel must forward only
+`/api/chat-webhooks/` and return 404 for everything else. Never route a
+whole hostname to a `local_trusted` board.
+</Warning>
+
+1. Install `cloudflared` from Cloudflare's apt repository, then create a named
+   tunnel and DNS record:
+
+   ```sh
+   cloudflared tunnel login
+   cloudflared tunnel create paperclip-teams
+   cloudflared tunnel route dns paperclip-teams teams-hook.example.com
+   ```
+
+2. Write `~/.cloudflared/config.yml` (use the tunnel ID printed by `create`):
+
+   ```yaml
+   tunnel: <TUNNEL-ID>
+   credentials-file: /home/<you>/.cloudflared/<TUNNEL-ID>.json
+   ingress:
+     - hostname: teams-hook.example.com
+       path: ^/api/chat-webhooks/
+       service: http://localhost:3100
+       originRequest:
+         # Paperclip's private hostname guard accepts loopback hosts only.
+         httpHostHeader: localhost
+     - service: http_status:404
+   ```
+
+3. Run it as a system service so it starts at boot:
+
+   ```sh
+   sudo cloudflared --config ~/.cloudflared/config.yml service install
+   sudo systemctl enable --now cloudflared
+   ```
+
+4. Tell Paperclip the webhook origin and restart Paperclip:
+
+   ```sh
+   echo 'PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL=https://teams-hook.example.com' \
+     >> ~/.paperclip/instances/default/.env
+   ```
+
+5. Check that only the webhook path is exposed. The first request should get
+   Cloudflare's 404; the second should return a JSON error from Paperclip,
+   which is expected because the request is unsigned:
+
+   ```sh
+   curl -s -o /dev/null -w '%{http_code}\n' https://teams-hook.example.com/api/health
+   curl -s -X POST https://teams-hook.example.com/api/chat-webhooks/probe/microsoft-teams
+   ```
+
+6. Stop the PC from sleeping, or the bot goes silent:
+
+   ```sh
+   sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+   ```
+
+With a private board, Teams messages carry no clickable task links, and you
+open account-confirmation links in a browser on the same PC (or over
+Tailscale). Make sure Paperclip itself restarts after a reboot, for example
+with a systemd service.
 
 ## 2. Turn on chat connectors
 
