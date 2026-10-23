@@ -1,4 +1,5 @@
 import type { UIAdapterModule } from "./types";
+import { antigravityLocalUIAdapter } from "./antigravity-local";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { paperclipRunnerUIAdapter } from "./paperclip-runner";
@@ -56,6 +57,7 @@ function registerBuiltInUIAdapters() {
   for (const adapter of [
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
+    antigravityLocalUIAdapter,
     paperclipRunnerUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,
