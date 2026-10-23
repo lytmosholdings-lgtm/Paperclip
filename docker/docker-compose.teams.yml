@@ -1,0 +1,67 @@
+# Paperclip with the Microsoft Teams chat connector reachable from Microsoft.
+#
+# Single-container Paperclip (embedded database) plus a Cloudflare named
+# tunnel that gives the instance a stable public HTTPS origin without opening
+# inbound ports. Microsoft's Bot Framework must be able to POST to
+# https://<your-host>/api/chat-webhooks/..., and Teams task links need a
+# public HTTPS board URL, so the board is served on that hostname too
+# (login required).
+#
+#   cd docker
+#   cp .env.teams.example .env      # then fill in every required value
+#   docker compose -f docker-compose.teams.yml up -d --build
+#
+# Full walkthrough: docs/guides/board-operator/microsoft-teams.md
+#
+services:
+  paperclip:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # Ceiling on processes; see docker-compose.quickstart.yml.
+    pids_limit: 2048
+    # Includes the shared 30s adapter-settlement window and final cleanup.
+    stop_grace_period: 90s
+    restart: unless-stopped
+    ports:
+      # Local admin access only. Public traffic arrives through the tunnel.
+      - "127.0.0.1:${PAPERCLIP_PORT:-3100}:3100"
+    environment:
+      HOST: "0.0.0.0"
+      PAPERCLIP_HOME: "/paperclip"
+
+      # ── LLM provider keys (at least one is needed for agents to work) ──
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+
+      # ── Deployment settings ──
+      # Internet-facing: login required, stricter doctor checks.
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
+      # The tunnel hostname, e.g. https://paperclip.example.com. Teams
+      # messaging endpoint and task links are derived from it.
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:?PAPERCLIP_PUBLIC_URL must be set to your public https URL}"
+      # Optional separate webhook-only origin; see docs/deploy/environment-variables.md.
+      PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL: "${PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL:-}"
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-}"
+      # Stop strangers on the public URL from creating accounts. Leave
+      # "false" until you have signed up and claimed the board.
+      PAPERCLIP_AUTH_DISABLE_SIGN_UP: "${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-false}"
+
+      # ── Required secrets (generate each with: openssl rand -hex 32) ──
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?PAPERCLIP_TOOL_ACTION_SIGNING_SECRET must be set}"
+    volumes:
+      # Persistent data directory (database, agent workspaces, uploads)
+      - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"
+
+  tunnel:
+    # Cloudflare named tunnel. In the Cloudflare dashboard, route the
+    # tunnel's public hostname to http://paperclip:3100.
+    image: cloudflare/cloudflared:2026.9.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN must be set}"
+    depends_on:
+      - paperclip
